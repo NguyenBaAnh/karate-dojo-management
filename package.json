@@ -1,0 +1,15 @@
+{
+  "name": "karate-dojo-management",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev:web": "pnpm --dir apps/web dev",
+    "dev:api": "pnpm --dir apps/api start:dev",
+    "build:web": "pnpm --dir apps/web build",
+    "build:api": "pnpm --dir apps/api build",
+    "prisma:generate": "pnpm --dir apps/api prisma:generate",
+    "prisma:migrate": "pnpm --dir apps/api prisma:migrate"
+  }
+}
