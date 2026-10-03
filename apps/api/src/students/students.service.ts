@@ -11,8 +11,11 @@ import { UpdateStudentDto } from './dto/update-student.dto.js';
 
 type AttendanceStats = {
   attended: number;
-  total: number;
+  total: number | null;
   recorded: number;
+  subscriptionId: string | null;
+  packageId: string | null;
+  packageName: string | null;
 };
 
 @Injectable()
@@ -29,110 +32,205 @@ export class StudentsService {
     return `HV-${year}-${random}`;
   }
 
+  private emptyAttendanceStats(): AttendanceStats {
+    return {
+      attended: 0,
+      total: null,
+      recorded: 0,
+      subscriptionId: null,
+      packageId: null,
+      packageName: null,
+    };
+  }
+
   private async buildAttendanceStats(studentIds: string[]) {
     const uniqueStudentIds = [...new Set(studentIds.filter(Boolean))];
     const result = new Map<string, AttendanceStats>();
 
     for (const studentId of uniqueStudentIds) {
-      result.set(studentId, { attended: 0, total: 0, recorded: 0 });
+      result.set(studentId, this.emptyAttendanceStats());
     }
 
     if (uniqueStudentIds.length === 0) return result;
 
     const now = new Date();
-    const enrollments = await this.prisma.enrollment.findMany({
-      where: {
-        studentId: { in: uniqueStudentIds },
-      },
-      select: {
-        studentId: true,
-        classId: true,
-        startedAt: true,
-        endedAt: true,
-      },
-    });
 
-    const classIds = [...new Set(enrollments.map((item) => item.classId))];
-    if (classIds.length === 0) return result;
-
-    const sessions = await this.prisma.classSession.findMany({
+    const subscriptions = await this.prisma.studentPackage.findMany({
       where: {
-        classId: { in: classIds },
-        isCancelled: false,
-        startsAt: { lte: now },
+        studentId: {
+          in: uniqueStudentIds,
+        },
       },
       select: {
         id: true,
-        classId: true,
-        startsAt: true,
+        studentId: true,
+        packageId: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        includedSessionsSnapshot: true,
+        packageNameSnapshot: true,
+        createdAt: true,
       },
+      orderBy: [
+        {
+          startDate: 'desc',
+        },
+        {
+          createdAt: 'desc',
+        },
+      ],
     });
 
-    const sessionsByClass = new Map<
+    const subscriptionsByStudent = new Map<
       string,
-      Array<{ id: string; startsAt: Date }>
+      (typeof subscriptions)[number][]
     >();
 
-    for (const session of sessions) {
-      const rows = sessionsByClass.get(session.classId) ?? [];
-      rows.push({ id: session.id, startsAt: session.startsAt });
-      sessionsByClass.set(session.classId, rows);
-    }
-
-    const eligibleSessionIds = new Map<string, Set<string>>();
-    for (const studentId of uniqueStudentIds) {
-      eligibleSessionIds.set(studentId, new Set());
-    }
-
-    for (const enrollment of enrollments) {
-      const sessionIds = eligibleSessionIds.get(enrollment.studentId)!;
-      for (const session of sessionsByClass.get(enrollment.classId) ?? []) {
-        if (session.startsAt < enrollment.startedAt) continue;
-        if (enrollment.endedAt && session.startsAt > enrollment.endedAt) continue;
-        sessionIds.add(session.id);
+    for (const subscription of subscriptions) {
+      if ((subscription.status as string) !== 'CANCELLED') {
+        continue;
       }
+
+      const rows =
+        subscriptionsByStudent.get(subscription.studentId) ?? [];
+
+        rows.push(subscription);
+
+      subscriptionsByStudent.set(
+        subscription.studentId,
+        rows,
+      );
     }
 
-    const attendances = await this.prisma.attendance.findMany({
-      where: {
-        studentId: { in: uniqueStudentIds },
-        sessionId: { in: sessions.map((item) => item.id) },
-      },
-      select: {
-        studentId: true,
-        sessionId: true,
-        status: true,
-      },
+    const currentSubscriptions: (typeof subscriptions)[number][] = [];
+
+    for (const studentId of uniqueStudentIds) {
+      const rows = subscriptionsByStudent.get(studentId) ?? [];
+
+      if (rows.length === 0) {
+        continue;
+      }
+
+    /*
+     * Thứ tự ưu tiên:
+     *
+     * 1. Gói ACTIVE/PAUSED đang có hiệu lực.
+     * 2. Gói PENDING đã tới ngày bắt đầu.
+     * 3. Gói gia hạn PENDING sắp tới.
+     * 4. Gói COMPLETED gần nhất.
+     * 5. Subscription gần nhất còn lại.
+     *
+     * Nhờ vậy nếu học viên gia hạn trước khi gói cũ kết thúc,
+     * cột Học viên vẫn hiển thị tiến độ của gói đang học.
+     */
+      const activeSubscription = rows.find((subscription) => {
+        const status = subscription.status as string;
+
+        return (
+          (status === 'ACTIVE' || status === 'PAUSED') &&
+          subscription.startDate.getTime() <= now.getTime() &&
+          (
+            !subscription.endDate ||
+            subscription.endDate.getTime() >= now.getTime()
+          )
+        );
+      });
+
+      const startedPendingSubscription = rows.find(
+        (subscription) =>
+          (subscription.status as string) === 'PENDING' &&
+          subscription.startDate.getTime() <= now.getTime()
+        );
+
+      const futurePendingSubscription = rows.find(
+        (subscription) =>
+          (subscription.status as string) === 'PENDING',
+      );
+
+    const latestCompletedSubscription = rows.find(
+      (subscription) =>
+        (subscription.status as string) === 'COMPLETED',
+    );
+
+    const currentSubscription =
+      activeSubscription ??
+      startedPendingSubscription ??
+      futurePendingSubscription ??
+      latestCompletedSubscription ??
+      rows[0];
+
+    currentSubscriptions.push(currentSubscription);
+
+    result.set(studentId, {
+      attended: 0,
+      total: currentSubscription.includedSessionsSnapshot,
+      recorded: 0,
+      subscriptionId: currentSubscription.id,
+      packageId: currentSubscription.packageId,
+      packageName: currentSubscription.packageNameSnapshot,
     });
+  }
 
-    for (const studentId of uniqueStudentIds) {
-      const total = eligibleSessionIds.get(studentId)?.size ?? 0;
-      result.set(studentId, { attended: 0, total, recorded: 0 });
-    }
-
-    for (const attendance of attendances) {
-      const eligible = eligibleSessionIds.get(attendance.studentId);
-      if (!eligible?.has(attendance.sessionId)) continue;
-
-      const current = result.get(attendance.studentId) ?? {
-        attended: 0,
-        total: eligible.size,
-        recorded: 0,
-      };
-
-      current.recorded += 1;
-      if (
-        attendance.status === 'PRESENT' ||
-        attendance.status === 'LATE' ||
-        attendance.status === 'MAKEUP'
-      ) {
-        current.attended += 1;
-      }
-      result.set(attendance.studentId, current);
-    }
-
+  if (currentSubscriptions.length === 0) {
     return result;
   }
+
+  /*
+   * Cách tính phải đồng nhất với module LearningPackages:
+   *
+   * PRESENT = đã dùng 1 buổi
+   * LATE    = đã dùng 1 buổi
+   * MAKEUP  = đã dùng 1 buổi
+   *
+   * ABSENT / EXCUSED chỉ được tính là đã ghi nhận,
+   * không làm tăng số buổi đã sử dụng.
+   */
+  const attendances = await this.prisma.attendance.findMany({
+    where: {
+      OR: currentSubscriptions.map((subscription) => ({
+        studentId: subscription.studentId,
+        session: {
+          isCancelled: false,
+          startsAt: {
+            gte: subscription.startDate,
+            ...(subscription.endDate
+              ? {
+                  lte: subscription.endDate,
+                }
+              : {}),
+          },
+        },
+      })),
+    },
+    select: {
+      studentId: true,
+      status: true,
+    },
+  });
+
+  for (const attendance of attendances) {
+    const current = result.get(attendance.studentId);
+
+    if (!current) {
+      continue;
+    }
+
+    current.recorded += 1;
+
+    if (
+      attendance.status === 'PRESENT' ||
+      attendance.status === 'LATE' ||
+      attendance.status === 'MAKEUP'
+    ) {
+      current.attended += 1;
+    }
+
+    result.set(attendance.studentId, current);
+  }
+
+  return result;
+}
 
   async findAll(
     search?: string,
@@ -207,11 +305,9 @@ export class StudentsService {
     return {
       data: students.map((student) => ({
         ...student,
-        attendanceStats: attendanceStats.get(student.id) ?? {
-          attended: 0,
-          total: 0,
-          recorded: 0,
-        },
+        attendanceStats:
+          attendanceStats.get(student.id) ??
+          this.emptyAttendanceStats(),
       })),
       pagination: {
         page,
@@ -253,11 +349,9 @@ export class StudentsService {
     const attendanceStats = await this.buildAttendanceStats([student.id]);
     return {
       ...student,
-      attendanceStats: attendanceStats.get(student.id) ?? {
-        attended: 0,
-        total: 0,
-        recorded: 0,
-      },
+      attendanceStats:
+        attendanceStats.get(student.id) ??
+        this.emptyAttendanceStats(),
     };
   }
 
@@ -515,11 +609,7 @@ export class StudentsService {
 
     return {
       ...updatedStudent,
-      attendanceStats: attendanceStats.get(id) ?? {
-        attended: 0,
-        total: 0,
-        recorded: 0,
-      },
+      attendanceStats: attendanceStats.get(id) ?? this.emptyAttendanceStats(),
     };
   }
 
