@@ -121,6 +121,11 @@ export class ClassSessionsService {
       this.prisma.enrollment.findMany({
         where: {
           classId: session.classId,
+          status: 'ACTIVE',
+          student: {
+            deletedAt: null,
+            status: 'ACTIVE',
+          },
           startedAt: { lte: session.startsAt },
           OR: [
             { endedAt: null },

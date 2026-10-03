@@ -419,7 +419,20 @@ export class StudentsService {
   }
 
   async update(id: string, dto: UpdateStudentDto) {
-    await this.findOne(id);
+    const currentStudent = await this.prisma.student.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    if (!currentStudent) {
+      throw new NotFoundException('Không tìm thấy học viên');
+    }
 
     if (dto.branchId) {
       const branch = await this.prisma.branch.findUnique({
@@ -433,28 +446,81 @@ export class StudentsService {
       }
     }
 
-    return this.prisma.student.update({
-      where: { id },
-      data: {
-        ...(dto.fullName !== undefined && {
-          fullName: dto.fullName.trim(),
-        }),
-        ...(dto.dateOfBirth !== undefined && {
-          dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
-        }),
-        ...(dto.gender !== undefined && { gender: dto.gender }),
-        ...(dto.phone !== undefined && { phone: dto.phone }),
-        ...(dto.email !== undefined && { email: dto.email }),
-        ...(dto.address !== undefined && { address: dto.address }),
-        ...(dto.beltLevel !== undefined && { beltLevel: dto.beltLevel }),
-        ...(dto.status !== undefined && { status: dto.status }),
-        ...(dto.note !== undefined && { note: dto.note }),
-        ...(dto.branchId !== undefined && { branchId: dto.branchId }),
-      },
-      include: {
-        branch: true,
-      },
+    const changedAt = new Date();
+
+    const updatedStudent = await this.prisma.$transaction(async (tx) => {
+      const student = await tx.student.update({
+        where: { id },
+        data: {
+          ...(dto.fullName !== undefined && {
+            fullName: dto.fullName.trim(),
+          }),
+          ...(dto.dateOfBirth !== undefined && {
+            dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
+          }),
+          ...(dto.gender !== undefined && { gender: dto.gender }),
+          ...(dto.phone !== undefined && { phone: dto.phone }),
+          ...(dto.email !== undefined && { email: dto.email }),
+          ...(dto.address !== undefined && { address: dto.address }),
+          ...(dto.beltLevel !== undefined && { beltLevel: dto.beltLevel }),
+          ...(dto.status !== undefined && { status: dto.status }),
+          ...(dto.status !== undefined &&
+            dto.status !== 'ACTIVE' && {
+              consecutiveAbsences: 0,
+            }),
+          ...(dto.note !== undefined && { note: dto.note }),
+          ...(dto.branchId !== undefined && { branchId: dto.branchId }),
+        },
+        include: {
+          branch: true,
+        },
+      });
+
+      // Bảo lưu: kết thúc các enrollment đang hoạt động tại thời điểm bảo lưu.
+      // Khi học viên quay lại ACTIVE, quản lý chủ động xếp lại lớp phù hợp.
+      if (dto.status === 'PAUSED') {
+        await tx.enrollment.updateMany({
+          where: {
+            studentId: id,
+            status: 'ACTIVE',
+          },
+          data: {
+            status: 'PAUSED',
+            endedAt: changedAt,
+          },
+        });
+      }
+
+      // Nghỉ hẳn: đóng cả enrollment ACTIVE và PAUSED để không còn xuất hiện
+      // trong lớp/điểm danh và không tiếp tục tăng tổng số buổi.
+      if (dto.status === 'INACTIVE') {
+        await tx.enrollment.updateMany({
+          where: {
+            studentId: id,
+            status: {
+              in: ['ACTIVE', 'PAUSED'],
+            },
+          },
+          data: {
+            status: 'CANCELLED',
+            endedAt: changedAt,
+          },
+        });
+      }
+
+      return student;
     });
+
+    const attendanceStats = await this.buildAttendanceStats([id]);
+
+    return {
+      ...updatedStudent,
+      attendanceStats: attendanceStats.get(id) ?? {
+        attended: 0,
+        total: 0,
+        recorded: 0,
+      },
+    };
   }
 
   async remove(id: string) {

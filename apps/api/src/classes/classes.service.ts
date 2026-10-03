@@ -28,6 +28,10 @@ import {
               enrollments: {
                 where: {
                   status: 'ACTIVE',
+                  student: {
+                    deletedAt: null,
+                    status: 'ACTIVE',
+                  },
                 },
               },
             },
@@ -58,6 +62,10 @@ import {
           enrollments: {
             where: {
               status: 'ACTIVE',
+              student: {
+                deletedAt: null,
+                status: 'ACTIVE',
+              },
             },
             include: {
               student: true,
@@ -66,7 +74,15 @@ import {
   
           _count: {
             select: {
-              enrollments: true,
+              enrollments: {
+                where: {
+                  status: 'ACTIVE',
+                  student: {
+                    deletedAt: null,
+                    status: 'ACTIVE',
+                  },
+                },
+              },
               sessions: true,
             },
           },

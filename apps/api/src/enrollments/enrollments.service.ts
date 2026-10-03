@@ -32,6 +32,10 @@ import {
         where: {
           classId,
           status: 'ACTIVE',
+          student: {
+            deletedAt: null,
+            status: 'ACTIVE',
+          },
         },
   
         include: {
@@ -60,6 +64,14 @@ import {
       if (!student) {
         throw new NotFoundException(
           'Không tìm thấy học viên',
+        );
+      }
+
+      if (student.status !== 'ACTIVE') {
+        throw new BadRequestException(
+          student.status === 'PAUSED'
+            ? 'Học viên đang bảo lưu, không thể xếp vào lớp'
+            : 'Học viên đã nghỉ hẳn, không thể xếp vào lớp',
         );
       }
   
@@ -109,6 +121,10 @@ import {
             where: {
               classId: dto.classId,
               status: 'ACTIVE',
+              student: {
+                deletedAt: null,
+                status: 'ACTIVE',
+              },
             },
           });
   
@@ -205,6 +221,10 @@ import {
           where: {
             classId: targetClassId,
             status: 'ACTIVE',
+            student: {
+              deletedAt: null,
+              status: 'ACTIVE',
+            },
           },
           select: { studentId: true },
         }),
@@ -269,6 +289,28 @@ import {
       }
   
       if (dto.status === 'ACTIVE') {
+        const student = await this.prisma.student.findFirst({
+          where: {
+            id: enrollment.studentId,
+            deletedAt: null,
+          },
+          select: {
+            status: true,
+          },
+        });
+
+        if (!student) {
+          throw new NotFoundException('Không tìm thấy học viên');
+        }
+
+        if (student.status !== 'ACTIVE') {
+          throw new BadRequestException(
+            student.status === 'PAUSED'
+              ? 'Học viên đang bảo lưu, không thể kích hoạt enrollment'
+              : 'Học viên đã nghỉ hẳn, không thể kích hoạt enrollment',
+          );
+        }
+
         const existing =
           await this.prisma.enrollment.findFirst({
             where: {

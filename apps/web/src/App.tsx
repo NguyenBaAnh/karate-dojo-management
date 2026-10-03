@@ -1509,6 +1509,7 @@ function AuthenticatedApp({
               initialClassId={attendanceTarget.classId}
               initialSessionId={attendanceTarget.sessionId}
               initialStudentId={attendanceTarget.studentId}
+              onAttendanceSaved={loadAllStudents}
             />
           )}
           {hasAnyModuleAccess && page === 'tuition' && (
@@ -2693,10 +2694,12 @@ function AttendancePage({
   initialClassId,
   initialSessionId,
   initialStudentId,
+  onAttendanceSaved,
 }: {
   initialClassId?: string
   initialSessionId?: string
   initialStudentId?: string
+  onAttendanceSaved?: () => void | Promise<void>
 }) {
   const [classes, setClasses] = useState<KarateClass[]>([])
   const [sessions, setSessions] = useState<ClassSession[]>([])
@@ -2940,7 +2943,16 @@ function AttendancePage({
       const data: SessionAttendanceResponse = await response.json()
       setAttendanceData(data)
       setRows(data.rows)
-      setMessage('Đã lưu điểm danh vào PostgreSQL.')
+
+      // Đồng bộ ngay cột "Số buổi đã học" và các nơi đang dùng danh sách học viên.
+      await onAttendanceSaved?.()
+
+      // Nếu đang xem lịch sử của một học viên cụ thể, tải lại ngay sau khi lưu.
+      if (initialStudentId) {
+        await loadStudentHistory(initialStudentId)
+      }
+
+      setMessage('Đã lưu điểm danh và đồng bộ số buổi đã học.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể lưu điểm danh')
     } finally {
