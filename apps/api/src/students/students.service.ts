@@ -43,6 +43,39 @@ export class StudentsService {
     };
   }
 
+  private packageTotal(subscription: {
+    includedSessionsSnapshot: number | null;
+    durationValueSnapshot: number | null;
+    durationUnitSnapshot: string | null;
+    sessionsPerWeekSnapshot: number | null;
+  }) {
+    // Ưu tiên tuyệt đối "Tổng số buổi" đã nhập trong gói.
+    if (subscription.includedSessionsSnapshot != null) {
+      return subscription.includedSessionsSnapshot;
+    }
+
+    // Chỉ quy ước khi gói KHÔNG nhập tổng số buổi.
+    const duration = subscription.durationValueSnapshot;
+    const unit = subscription.durationUnitSnapshot;
+    const sessionsPerWeek = subscription.sessionsPerWeekSnapshot;
+
+    if (!duration || !unit || !sessionsPerWeek) return null;
+
+    if (unit === 'WEEK') {
+      return duration * sessionsPerWeek;
+    }
+
+    if (unit === 'MONTH') {
+      return duration * 4 * sessionsPerWeek;
+    }
+
+    if (unit === 'DAY') {
+      return Math.ceil((duration * sessionsPerWeek) / 7);
+    }
+
+    return null;
+  }
+
   private async buildAttendanceStats(studentIds: string[]) {
     const uniqueStudentIds = [...new Set(studentIds.filter(Boolean))];
     const result = new Map<string, AttendanceStats>();
@@ -57,9 +90,8 @@ export class StudentsService {
 
     const subscriptions = await this.prisma.studentPackage.findMany({
       where: {
-        studentId: {
-          in: uniqueStudentIds,
-        },
+        studentId: { in: uniqueStudentIds },
+        status: { not: 'CANCELLED' as any },
       },
       select: {
         id: true,
@@ -69,168 +101,127 @@ export class StudentsService {
         endDate: true,
         status: true,
         includedSessionsSnapshot: true,
+        durationValueSnapshot: true,
+        durationUnitSnapshot: true,
+        sessionsPerWeekSnapshot: true,
         packageNameSnapshot: true,
         createdAt: true,
       },
       orderBy: [
-        {
-          startDate: 'desc',
-        },
-        {
-          createdAt: 'desc',
-        },
+        { startDate: 'desc' },
+        { createdAt: 'desc' },
       ],
     });
 
     const subscriptionsByStudent = new Map<
       string,
-      (typeof subscriptions)[number][]
+      Array<(typeof subscriptions)[number]>
     >();
 
     for (const subscription of subscriptions) {
-      if ((subscription.status as string) !== 'CANCELLED') {
-        continue;
-      }
-
-      const rows =
-        subscriptionsByStudent.get(subscription.studentId) ?? [];
-
-        rows.push(subscription);
-
-      subscriptionsByStudent.set(
-        subscription.studentId,
-        rows,
-      );
+      const rows = subscriptionsByStudent.get(subscription.studentId) ?? [];
+      rows.push(subscription);
+      subscriptionsByStudent.set(subscription.studentId, rows);
     }
 
-    const currentSubscriptions: (typeof subscriptions)[number][] = [];
+    const selectedSubscriptions: Array<(typeof subscriptions)[number]> = [];
 
     for (const studentId of uniqueStudentIds) {
       const rows = subscriptionsByStudent.get(studentId) ?? [];
+      if (rows.length === 0) continue;
 
-      if (rows.length === 0) {
-        continue;
-      }
-
-    /*
-     * Thứ tự ưu tiên:
-     *
-     * 1. Gói ACTIVE/PAUSED đang có hiệu lực.
-     * 2. Gói PENDING đã tới ngày bắt đầu.
-     * 3. Gói gia hạn PENDING sắp tới.
-     * 4. Gói COMPLETED gần nhất.
-     * 5. Subscription gần nhất còn lại.
-     *
-     * Nhờ vậy nếu học viên gia hạn trước khi gói cũ kết thúc,
-     * cột Học viên vẫn hiển thị tiến độ của gói đang học.
-     */
-      const activeSubscription = rows.find((subscription) => {
+      // 1) Gói ACTIVE/PAUSED đang thực sự có hiệu lực.
+      const active = rows.find((subscription) => {
         const status = subscription.status as string;
-
         return (
           (status === 'ACTIVE' || status === 'PAUSED') &&
           subscription.startDate.getTime() <= now.getTime() &&
-          (
-            !subscription.endDate ||
-            subscription.endDate.getTime() >= now.getTime()
-          )
+          (!subscription.endDate ||
+            subscription.endDate.getTime() >= now.getTime())
         );
       });
 
-      const startedPendingSubscription = rows.find(
+      // 2) Gói PENDING đã tới ngày bắt đầu nhưng trạng thái chưa được cập nhật.
+      const pendingStarted = rows.find(
         (subscription) =>
           (subscription.status as string) === 'PENDING' &&
-          subscription.startDate.getTime() <= now.getTime()
-        );
-
-      const futurePendingSubscription = rows.find(
-        (subscription) =>
-          (subscription.status as string) === 'PENDING',
+          subscription.startDate.getTime() <= now.getTime(),
       );
 
-    const latestCompletedSubscription = rows.find(
-      (subscription) =>
-        (subscription.status as string) === 'COMPLETED',
-    );
+      // 3) Nếu đã gia hạn trước, ưu tiên gói PENDING sắp tới khi gói cũ không còn hiệu lực.
+      const pendingFuture = rows.find(
+        (subscription) =>
+          (subscription.status as string) === 'PENDING' &&
+          subscription.startDate.getTime() > now.getTime(),
+      );
 
-    const currentSubscription =
-      activeSubscription ??
-      startedPendingSubscription ??
-      futurePendingSubscription ??
-      latestCompletedSubscription ??
-      rows[0];
+      // 4) Cuối cùng dùng gói gần nhất đã bắt đầu để vẫn hiển thị lịch sử gói.
+      const latestStarted = rows.find(
+        (subscription) => subscription.startDate.getTime() <= now.getTime(),
+      );
 
-    currentSubscriptions.push(currentSubscription);
+      const selected =
+        active ?? pendingStarted ?? pendingFuture ?? latestStarted ?? rows[0];
 
-    result.set(studentId, {
-      attended: 0,
-      total: currentSubscription.includedSessionsSnapshot,
-      recorded: 0,
-      subscriptionId: currentSubscription.id,
-      packageId: currentSubscription.packageId,
-      packageName: currentSubscription.packageNameSnapshot,
+      selectedSubscriptions.push(selected);
+
+      result.set(studentId, {
+        attended: 0,
+        total: this.packageTotal(selected),
+        recorded: 0,
+        subscriptionId: selected.id,
+        packageId: selected.packageId,
+        packageName: selected.packageNameSnapshot,
+      });
+    }
+
+    if (selectedSubscriptions.length === 0) return result;
+
+    const attendances = await this.prisma.attendance.findMany({
+      where: {
+        OR: selectedSubscriptions.map((subscription) => {
+          const usageEnd =
+            subscription.endDate && subscription.endDate.getTime() < now.getTime()
+              ? subscription.endDate
+              : now;
+
+          return {
+            studentId: subscription.studentId,
+            session: {
+              isCancelled: false,
+              startsAt: {
+                gte: subscription.startDate,
+                lte: usageEnd,
+              },
+            },
+          };
+        }),
+      },
+      select: {
+        studentId: true,
+        status: true,
+      },
     });
-  }
 
-  if (currentSubscriptions.length === 0) {
+    for (const attendance of attendances) {
+      const current = result.get(attendance.studentId);
+      if (!current) continue;
+
+      current.recorded += 1;
+
+      if (
+        attendance.status === 'PRESENT' ||
+        attendance.status === 'LATE' ||
+        attendance.status === 'MAKEUP'
+      ) {
+        current.attended += 1;
+      }
+
+      result.set(attendance.studentId, current);
+    }
+
     return result;
   }
-
-  /*
-   * Cách tính phải đồng nhất với module LearningPackages:
-   *
-   * PRESENT = đã dùng 1 buổi
-   * LATE    = đã dùng 1 buổi
-   * MAKEUP  = đã dùng 1 buổi
-   *
-   * ABSENT / EXCUSED chỉ được tính là đã ghi nhận,
-   * không làm tăng số buổi đã sử dụng.
-   */
-  const attendances = await this.prisma.attendance.findMany({
-    where: {
-      OR: currentSubscriptions.map((subscription) => ({
-        studentId: subscription.studentId,
-        session: {
-          isCancelled: false,
-          startsAt: {
-            gte: subscription.startDate,
-            ...(subscription.endDate
-              ? {
-                  lte: subscription.endDate,
-                }
-              : {}),
-          },
-        },
-      })),
-    },
-    select: {
-      studentId: true,
-      status: true,
-    },
-  });
-
-  for (const attendance of attendances) {
-    const current = result.get(attendance.studentId);
-
-    if (!current) {
-      continue;
-    }
-
-    current.recorded += 1;
-
-    if (
-      attendance.status === 'PRESENT' ||
-      attendance.status === 'LATE' ||
-      attendance.status === 'MAKEUP'
-    ) {
-      current.attended += 1;
-    }
-
-    result.set(attendance.studentId, current);
-  }
-
-  return result;
-}
 
   async findAll(
     search?: string,
@@ -305,9 +296,7 @@ export class StudentsService {
     return {
       data: students.map((student) => ({
         ...student,
-        attendanceStats:
-          attendanceStats.get(student.id) ??
-          this.emptyAttendanceStats(),
+        attendanceStats: attendanceStats.get(student.id) ?? this.emptyAttendanceStats(),
       })),
       pagination: {
         page,
@@ -349,9 +338,7 @@ export class StudentsService {
     const attendanceStats = await this.buildAttendanceStats([student.id]);
     return {
       ...student,
-      attendanceStats:
-        attendanceStats.get(student.id) ??
-        this.emptyAttendanceStats(),
+      attendanceStats: attendanceStats.get(student.id) ?? this.emptyAttendanceStats(),
     };
   }
 

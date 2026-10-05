@@ -1591,13 +1591,13 @@ function AuthenticatedApp({
                   <Detail label="Email" value={selectedStudent.email ?? '—'} />
                   <Detail label="Ngày nhập học" value={formatDate(selectedStudent.joinedAt)} />
                   <Detail
-  label="Số buổi đã học"
-  value={`${selectedStudent.attendanceStats?.attended ?? 0} / ${
-    selectedStudent.attendanceStats?.total == null
-      ? '—'
-      : selectedStudent.attendanceStats.total
-  }`}
-/>
+                    label="Số buổi đã học"
+                    value={`${selectedStudent.attendanceStats?.attended ?? 0} / ${
+                      selectedStudent.attendanceStats?.total == null
+                        ? '—'
+                        : selectedStudent.attendanceStats.total
+                    }`}
+                  />
                   <Detail label="Địa chỉ" value={selectedStudent.address ?? '—'} wide />
                   <Detail label="Ghi chú" value={selectedStudent.note ?? 'Không có ghi chú'} wide />
                 </div>
@@ -1912,24 +1912,24 @@ function StudentsPage({
                     />
                   </td>
                   <td>
-                  <button
-  type="button"
-  className="attendance-progress-btn"
-  onClick={() => onAttendance(student)}
-  title={
-    student.attendanceStats?.packageName
-      ? `Gói hiện tại: ${student.attendanceStats.packageName} · Bấm để xem lịch sử điểm danh`
-      : 'Chưa có gói học · Bấm để xem lịch sử điểm danh'
-  }
->
-  <strong>{student.attendanceStats?.attended ?? 0}</strong>
-  <span>
-    {' / '}
-    {student.attendanceStats?.total == null
-      ? '—'
-      : student.attendanceStats.total}
-  </span>
-</button>
+                    <button
+                      type="button"
+                      className="attendance-progress-btn"
+                      onClick={() => onAttendance(student)}
+                      title={
+                        student.attendanceStats?.packageName
+                          ? `Gói hiện tại: ${student.attendanceStats.packageName} · Bấm để xem lịch sử điểm danh`
+                          : 'Chưa có gói học · Bấm để xem lịch sử điểm danh'
+                      }
+                    >
+                      <strong>{student.attendanceStats?.attended ?? 0}</strong>
+                      <span>
+                        {' / '}
+                        {student.attendanceStats?.total == null
+                          ? '—'
+                          : student.attendanceStats.total}
+                      </span>
+                    </button>
                   </td>
                   <td><button className="tiny-btn" onClick={() => onView(student)}>Chi tiết</button></td>
                 </tr>
