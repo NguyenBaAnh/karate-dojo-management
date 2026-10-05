@@ -117,6 +117,14 @@ export class ClassSessionsService {
       throw new NotFoundException('Không tìm thấy buổi học');
     }
 
+    // datetime-local ở frontend chỉ lưu tới phút, trong khi Enrollment.startedAt
+    // được Prisma lưu đủ cả giây. Nếu vừa xếp học viên rồi tạo buổi học trong
+    // cùng phút, session có thể là 14:55:00 còn enrollment là 14:55:42.
+    // Cho phép enrollment phát sinh trong chính phút bắt đầu của buổi học.
+    const rosterStartedAtCutoff = new Date(
+      session.startsAt.getTime() + 59_999,
+    );
+
     const [enrollments, savedAttendances] = await Promise.all([
       this.prisma.enrollment.findMany({
         where: {
@@ -126,7 +134,7 @@ export class ClassSessionsService {
             deletedAt: null,
             status: 'ACTIVE',
           },
-          startedAt: { lte: session.startsAt },
+          startedAt: { lte: rosterStartedAtCutoff },
           OR: [
             { endedAt: null },
             { endedAt: { gte: session.startsAt } },
